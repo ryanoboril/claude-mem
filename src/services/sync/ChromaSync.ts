@@ -865,6 +865,73 @@ export class ChromaSync {
     return this.deduplicateQueryResults(results);
   }
 
+  /**
+   * Write-time semantic dedup guard (ryano-mem: closes claude-mem #3038/#3163).
+   *
+   * content_hash dedup (SessionStore.storeObservations) only catches
+   * byte-identical text AND is scoped to a single memory_session_id, so it
+   * misses both (a) paraphrased restatements of a fact already recorded, and
+   * (b) any repeat at all across session boundaries. This queries the
+   * project's full Chroma history (all sessions, all time) for the nearest
+   * existing observation to a candidate before it is inserted.
+   *
+   * Distance scale/threshold is NOT independently calibrated against a live
+   * embedding model in this change; CLAUDE_MEM_DEDUP_GATE_MAX_DISTANCE is a
+   * starting point and is expected to need tuning per-deployment. Every
+   * decision is logged with the raw distance so it can be observed and
+   * adjusted without re-reading code.
+   *
+   * Fails open: any Chroma error (including "not available yet") returns
+   * null rather than throwing, so a Chroma outage degrades to "no dedup",
+   * never to "lost observation".
+   */
+  async findNearDuplicateObservation(
+    candidateText: string,
+    project: string,
+    maxDistance: number
+  ): Promise<{ sqliteId: number; distance: number } | null> {
+    if (!candidateText.trim()) {
+      return null;
+    }
+
+    let result: { ids: number[]; distances: number[]; metadatas: any[] };
+    try {
+      result = await this.queryChroma(candidateText, 3, {
+        $and: [
+          { doc_type: 'observation' },
+          { $or: [{ project }, { merged_into_project: project }] }
+        ]
+      });
+    } catch (error) {
+      logger.warn('CHROMA_SYNC', 'Dedup-gate query failed — failing open (observation will be stored)', {
+        project,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+
+    if (result.ids.length === 0) {
+      return null;
+    }
+
+    const nearestDistance = result.distances[0];
+    const nearestId = result.ids[0];
+
+    logger.debug('CHROMA_SYNC', 'Dedup-gate nearest existing observation', {
+      project,
+      nearestId,
+      nearestDistance,
+      maxDistance,
+      willSkip: nearestDistance <= maxDistance
+    });
+
+    if (nearestDistance <= maxDistance) {
+      return { sqliteId: nearestId, distance: nearestDistance };
+    }
+
+    return null;
+  }
+
   private deduplicateQueryResults(results: any): { ids: number[]; distances: number[]; metadatas: any[] } {
     const ids: number[] = [];
     const seen = new Set<string>();

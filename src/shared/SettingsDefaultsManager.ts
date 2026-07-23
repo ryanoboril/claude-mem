@@ -48,8 +48,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
-  CLAUDE_MEM_SEMANTIC_INJECT: string;        
-  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  CLAUDE_MEM_SEMANTIC_INJECT: string;
+  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;
+  CLAUDE_MEM_DEDUP_GATE_ENABLED: string;
+  CLAUDE_MEM_DEDUP_GATE_MAX_DISTANCE: string;
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
@@ -141,6 +143,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
+    CLAUDE_MEM_DEDUP_GATE_ENABLED: 'true',           // ryano-mem: skip storing an observation that's a near-duplicate of one already in this project's Chroma history
+    CLAUDE_MEM_DEDUP_GATE_MAX_DISTANCE: '0.15',      // Chroma distance cutoff for "same fact" — NOT independently calibrated against a live embedding model, tune per-deployment using the logged distances
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
