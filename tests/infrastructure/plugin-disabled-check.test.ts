@@ -35,7 +35,7 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   it('should return false when plugin is explicitly enabled', () => {
     const settings = {
       enabledPlugins: {
-        'claude-mem@thedotmack': true
+        'claude-mem@ryano-mem': true
       }
     };
     writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
@@ -45,11 +45,24 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
   it('should return true when plugin is explicitly disabled', () => {
     const settings = {
       enabledPlugins: {
-        'claude-mem@thedotmack': false
+        'claude-mem@ryano-mem': false
       }
     };
     writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
     expect(isPluginDisabledInClaudeSettings()).toBe(true);
+  });
+
+  it('regression guard (ryano-mem): disabling the upstream thedotmack install must NOT disable this fork', () => {
+    // Found live: PLUGIN_SETTINGS_KEY was hardcoded to 'claude-mem@thedotmack',
+    // so disabling upstream (to stop its daemon competing with this fork's on
+    // the same port) silently disabled this fork's own daemon too.
+    const settings = {
+      enabledPlugins: {
+        'claude-mem@thedotmack': false
+      }
+    };
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
+    expect(isPluginDisabledInClaudeSettings()).toBe(false);
   });
 
   it('should return false when enabledPlugins key is missing', () => {

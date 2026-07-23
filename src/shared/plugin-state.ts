@@ -5,7 +5,15 @@ import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
 import { parseJsonWithBom } from './atomic-json.js';
 
-const PLUGIN_SETTINGS_KEY = 'claude-mem@thedotmack';
+// ryano-mem: this MUST match the marketplace this fork is actually installed
+// under, not upstream's. It was hardcoded to 'claude-mem@thedotmack' — so
+// disabling the upstream plugin (to stop its daemon competing with this
+// fork's on the same port) silently disabled this fork's daemon too, since
+// this check doesn't know the two are different installs. Confirmed live:
+// worker-service start/restart exited immediately with no daemon spawned
+// and no log line past the disabled-check, right after `claude plugin
+// disable claude-mem@thedotmack`.
+const PLUGIN_SETTINGS_KEY = 'claude-mem@ryano-mem';
 
 export function isPluginDisabledInClaudeSettings(): boolean {
   try {
