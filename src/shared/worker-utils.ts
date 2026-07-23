@@ -216,13 +216,37 @@ function candidateWorkerScriptPath(root: string): string {
   return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
+// ryano-mem: previously hardcoded to cache/thedotmack/claude-mem, which meant
+// a CLI-initiated respawn always resurrected upstream's install regardless of
+// which marketplace the running process actually came from — confirmed live:
+// a restart invoked against this fork's install spawned disabled upstream
+// code from cache/thedotmack instead. Scanning every marketplace's cache dir
+// (not one hardcoded name) is the fix, and it's also correct in general: any
+// user with multiple claude-mem sources registered should get the most
+// recently installed version, not whichever marketplace shipped first.
 function cacheWorkerScriptCandidates(): string[] {
   const pluginsRoot = path.dirname(path.dirname(MARKETPLACE_ROOT));
-  const cacheRoot = path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
+  const cacheDir = path.join(pluginsRoot, 'cache');
   try {
-    return readdirSync(cacheRoot)
-      .filter(name => /^\d/.test(name))
-      .map(name => path.join(cacheRoot, name))
+    const marketplaceNames = readdirSync(cacheDir).filter(name => {
+      try {
+        return statSync(path.join(cacheDir, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+
+    return marketplaceNames
+      .flatMap(marketplaceName => {
+        const cacheRoot = path.join(cacheDir, marketplaceName, 'claude-mem');
+        try {
+          return readdirSync(cacheRoot)
+            .filter(name => /^\d/.test(name))
+            .map(name => path.join(cacheRoot, name));
+        } catch {
+          return [];
+        }
+      })
       .filter(candidate => {
         try {
           return statSync(candidate).isDirectory();

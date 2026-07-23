@@ -39,7 +39,12 @@ export function resolveDataDir(): string {
 export const DATA_DIR = resolveDataDir();
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
-export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
+// ryano-mem: this fork is registered under the 'ryano-mem' marketplace name,
+// not upstream's 'thedotmack'. This constant is a last-resort fallback path
+// (primary resolution goes through CLAUDE_PLUGIN_ROOT / cacheWorkerScriptCandidates
+// in worker-utils.ts), but it must still point at this fork's own marketplace
+// clone, not upstream's — otherwise the fallback resurrects disabled upstream code.
+export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'ryano-mem');
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
