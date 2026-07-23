@@ -38,6 +38,7 @@ describe('ResponseProcessor', () => {
   let mockStoreObservations: ReturnType<typeof mock>;
   let mockChromaSyncObservation: ReturnType<typeof mock>;
   let mockChromaSyncSummary: ReturnType<typeof mock>;
+  let mockFindNearDuplicateObservation: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
   let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
   let mockDbManager: DatabaseManager;
@@ -60,6 +61,9 @@ describe('ResponseProcessor', () => {
 
     mockChromaSyncObservation = mock(() => Promise.resolve());
     mockChromaSyncSummary = mock(() => Promise.resolve());
+    // Default: no near-duplicate found, so existing tests exercise the
+    // normal store-everything path untouched by the dedup gate.
+    mockFindNearDuplicateObservation = mock(() => Promise.resolve(null));
 
     mockDbManager = {
       getSessionStore: () => ({
@@ -70,6 +74,7 @@ describe('ResponseProcessor', () => {
       getChromaSync: () => ({
         syncObservation: mockChromaSyncObservation,
         syncSummary: mockChromaSyncSummary,
+        findNearDuplicateObservation: mockFindNearDuplicateObservation,
       }),
       getCloudSync: () => null,
     } as unknown as DatabaseManager;
@@ -693,6 +698,76 @@ describe('ResponseProcessor', () => {
       await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
 
       expect(session.lastSummaryStored).toBe(false);
+    });
+  });
+
+  describe('semantic dedup gate (ryano-mem, closes claude-mem #3038/#3163)', () => {
+    const twoObservationResponse = `
+      <observation>
+        <type>discovery</type>
+        <title>First discovery</title>
+        <narrative>First narrative</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+      <observation>
+        <type>bugfix</type>
+        <title>Fixed null pointer</title>
+        <narrative>Second narrative</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    afterEach(() => {
+      delete process.env.CLAUDE_MEM_DEDUP_GATE_ENABLED;
+      delete process.env.CLAUDE_MEM_DEDUP_GATE_MAX_DISTANCE;
+    });
+
+    it('excludes an observation flagged as a near-duplicate before storeObservations is called', async () => {
+      mockFindNearDuplicateObservation.mockImplementation((text: string) =>
+        Promise.resolve(text === 'Second narrative' ? { sqliteId: 999, distance: 0.02 } : null)
+      );
+
+      const session = createMockSession();
+      await processAgentResponse(
+        twoObservationResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent'
+      );
+
+      expect(mockFindNearDuplicateObservation).toHaveBeenCalledTimes(2);
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(1);
+      expect(observations[0].narrative).toBe('First narrative');
+    });
+
+    it('stores everything when the Chroma dedup query fails (fails open, never loses data)', async () => {
+      mockFindNearDuplicateObservation.mockImplementation(() => Promise.reject(new Error('chroma-mcp unreachable')));
+
+      const session = createMockSession();
+      await processAgentResponse(
+        twoObservationResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent'
+      );
+
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(2);
+    });
+
+    it('skips the dedup query entirely when CLAUDE_MEM_DEDUP_GATE_ENABLED=false', async () => {
+      process.env.CLAUDE_MEM_DEDUP_GATE_ENABLED = 'false';
+      mockFindNearDuplicateObservation.mockImplementation(() => Promise.resolve({ sqliteId: 999, distance: 0 }));
+
+      const session = createMockSession();
+      await processAgentResponse(
+        twoObservationResponse, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent'
+      );
+
+      expect(mockFindNearDuplicateObservation).not.toHaveBeenCalled();
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(2);
     });
   });
 });

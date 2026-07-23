@@ -121,12 +121,18 @@ export async function processAgentResponse(
     agent_id: session.pendingAgentId ?? null
   }));
 
+  const dedupedObservations = await filterSemanticDuplicates(
+    labeledObservations,
+    session.project,
+    dbManager
+  );
+
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
       session.memorySessionId,
       session.project,
-      labeledObservations,
+      dedupedObservations,
       summaryForStore,
       session.lastPromptNumber,
       discoveryTokens,
@@ -148,7 +154,7 @@ export async function processAgentResponse(
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).
   const typeCounts: Record<string, number> = { bugfix: 0, discovery: 0, decision: 0, refactor: 0, other: 0 };
-  for (const obs of labeledObservations) {
+  for (const obs of dedupedObservations) {
     const bucket = obs.type in typeCounts && obs.type !== 'other' ? obs.type : 'other';
     typeCounts[bucket]++;
   }
@@ -173,7 +179,7 @@ export async function processAgentResponse(
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,
-    observation_type: labeledObservations.length > 0 ? dominantType : undefined,
+    observation_type: dedupedObservations.length > 0 ? dominantType : undefined,
     obs_type_bugfix: typeCounts.bugfix,
     obs_type_discovery: typeCounts.discovery,
     obs_type_decision: typeCounts.decision,
@@ -212,14 +218,14 @@ export async function processAgentResponse(
   worker?.broadcastProcessingStatus?.();
 
   void notifyTelegram({
-    observations: labeledObservations,
+    observations: dedupedObservations,
     observationIds: result.observationIds,
     project: session.project,
     memorySessionId: session.memorySessionId,
   });
 
   await syncAndBroadcastObservations(
-    observations,
+    dedupedObservations,
     result,
     session,
     dbManager,
@@ -237,6 +243,72 @@ export async function processAgentResponse(
     worker,
     agentName
   );
+}
+
+/**
+ * ryano-mem write-time semantic dedup gate (closes claude-mem #3038/#3163).
+ *
+ * content_hash dedup (SessionStore.storeObservations) is scoped to a single
+ * memory_session_id and only catches byte-identical text, so it misses
+ * paraphrased restatements of an already-recorded fact, and misses ALL
+ * repeats across session boundaries. This checks each candidate observation
+ * against the project's full Chroma history (every session, all time)
+ * before storage.
+ *
+ * Runs one Chroma query per observation. Batches from the observer are
+ * typically single-digit counts, so this is not parallelized; if that
+ * assumption stops holding, revisit with Promise.all.
+ */
+async function filterSemanticDuplicates<T extends ParsedObservation>(
+  candidates: T[],
+  project: string,
+  dbManager: DatabaseManager
+): Promise<T[]> {
+  if (SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_GATE_ENABLED') !== 'true') {
+    return candidates;
+  }
+
+  const chromaSync = dbManager.getChromaSync();
+  if (!chromaSync) {
+    return candidates;
+  }
+
+  const maxDistance = parseFloat(SettingsDefaultsManager.get('CLAUDE_MEM_DEDUP_GATE_MAX_DISTANCE'));
+
+  const kept: T[] = [];
+  for (const candidate of candidates) {
+    const candidateText = candidate.narrative || candidate.facts.join(' ') || candidate.title || '';
+
+    let duplicate: { sqliteId: number; distance: number } | null;
+    try {
+      duplicate = await chromaSync.findNearDuplicateObservation(candidateText, project, maxDistance);
+    } catch (error) {
+      // ChromaSync.findNearDuplicateObservation already fails open internally;
+      // this catch is a second line of defense so a misbehaving/mocked
+      // implementation can never turn a Chroma hiccup into a lost observation.
+      logger.warn('DB', 'Dedup-gate check threw — failing open (observation will be stored)', {
+        project,
+        title: candidate.title || '(untitled)',
+        error: error instanceof Error ? error.message : String(error)
+      });
+      duplicate = null;
+    }
+
+    if (duplicate) {
+      logger.info('DB', 'Dedup-gate skipped storing near-duplicate observation', {
+        project,
+        title: candidate.title || '(untitled)',
+        matchedExistingObservationId: duplicate.sqliteId,
+        distance: duplicate.distance,
+        maxDistance
+      });
+      continue;
+    }
+
+    kept.push(candidate);
+  }
+
+  return kept;
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
